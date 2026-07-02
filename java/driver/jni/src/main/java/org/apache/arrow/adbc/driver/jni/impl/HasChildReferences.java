@@ -14,24 +14,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.arrow.adbc.driver.jni.impl;
 
-public class NativeConnectionHandle extends NativeHandle {
-  NativeConnectionHandle(long nativeHandle) {
-    super(nativeHandle);
-  }
-
-  long getConnectionHandle() {
-    long handle = state.nativeHandle;
-    if (handle == 0) {
-      throw new IllegalStateException("Native connection handle is closed");
-    }
-    return handle;
-  }
-
-  @Override
-  Closer getCloseFunction() {
-    return NativeAdbc::closeConnection;
-  }
+public interface HasChildReferences {
+  ChildReferences getChildReferences();
 }
