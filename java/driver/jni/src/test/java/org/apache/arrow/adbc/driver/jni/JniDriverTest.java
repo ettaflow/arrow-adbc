@@ -18,6 +18,7 @@
 package org.apache.arrow.adbc.driver.jni;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.io.File;
@@ -140,6 +141,94 @@ class JniDriverTest {
               .isEqualTo(1L);
         }
       }
+    }
+  }
+
+  // Ensure strings with characters that differ between UTF-8 and Java's "modified UTF-8" are
+  // properly serialized
+  @Test
+  void queryNonBmpUtf8() throws Exception {
+    try (final BufferAllocator allocator = new RootAllocator()) {
+      JniDriver driver = new JniDriver(allocator);
+      Map<String, Object> parameters = new HashMap<>();
+      JniDriver.PARAM_DRIVER.set(parameters, "adbc_driver_sqlite");
+      String expected = "\uD83D\uDE00"; // U+1f600 GRINNING FACE (big-endian UTF-16)
+      // Sanity check that this encodes to what we expect
+      assertThat(expected.getBytes(StandardCharsets.UTF_8))
+          .isEqualTo(new byte[] {(byte) 0xf0, (byte) 0x9f, (byte) 0x98, (byte) 0x80});
+
+      try (final AdbcDatabase db = driver.open(parameters);
+          final AdbcConnection conn = db.connect();
+          final AdbcStatement stmt = conn.createStatement()) {
+        stmt.setSqlQuery("SELECT '" + expected + "'");
+        try (final AdbcStatement.QueryResult result = stmt.executeQuery()) {
+          assertThat(result.getReader().loadNextBatch()).isTrue();
+          assertThat(result.getReader().getVectorSchemaRoot().getVector(0).getObject(0))
+              .hasToString(expected);
+        }
+      }
+    }
+  }
+
+  @Test
+  void statementThrowsAfterClose() throws Exception {
+    try (final BufferAllocator allocator = new RootAllocator()) {
+      JniDriver driver = new JniDriver(allocator);
+      Map<String, Object> parameters = new HashMap<>();
+      JniDriver.PARAM_DRIVER.set(parameters, "adbc_driver_sqlite");
+
+      try (final AdbcDatabase db = driver.open(parameters);
+          final AdbcConnection conn = db.connect()) {
+        final AdbcStatement stmt = conn.createStatement();
+        stmt.close();
+
+        assertThatThrownBy(() -> stmt.setSqlQuery("SELECT 1"))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessage("Native statement handle is closed");
+      }
+    }
+  }
+
+  @Test
+  void connectionClosesStatements() throws Exception {
+    try (final BufferAllocator allocator = new RootAllocator()) {
+      JniDriver driver = new JniDriver(allocator);
+      Map<String, Object> parameters = new HashMap<>();
+      JniDriver.PARAM_DRIVER.set(parameters, "adbc_driver_sqlite");
+
+      try (final AdbcDatabase db = driver.open(parameters)) {
+        final AdbcConnection conn = db.connect();
+        final AdbcStatement stmt = conn.createStatement();
+
+        conn.close();
+
+        assertThatThrownBy(() -> stmt.setSqlQuery("SELECT 1"))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessage("Native statement handle is closed");
+      }
+    }
+  }
+
+  @Test
+  void databaseClosesConnections() throws Exception {
+    try (final BufferAllocator allocator = new RootAllocator()) {
+      JniDriver driver = new JniDriver(allocator);
+      Map<String, Object> parameters = new HashMap<>();
+      JniDriver.PARAM_DRIVER.set(parameters, "adbc_driver_sqlite");
+
+      final AdbcDatabase db = driver.open(parameters);
+      final AdbcConnection conn = db.connect();
+      final AdbcStatement stmt = conn.createStatement();
+
+      db.close();
+
+      assertThatThrownBy(() -> stmt.setSqlQuery("SELECT 1"))
+          .isInstanceOf(IllegalStateException.class)
+          .hasMessage("Native statement handle is closed");
+
+      assertThatThrownBy(conn::commit)
+          .isInstanceOf(IllegalStateException.class)
+          .hasMessage("Native connection handle is closed");
     }
   }
 
